@@ -20,9 +20,15 @@ func setupRepo(t *testing.T) string {
 		t.Fatal(err)
 	}
 	git(t, dir, "init", "-q", "-b", "main")
-	git(t, dir, "add", ".")
-	git(t, dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "-m", "init")
+	commitAll(t, dir, "init")
 	return dir
+}
+
+// commitAll stages everything and commits.
+func commitAll(t *testing.T, dir, msg string) {
+	t.Helper()
+	git(t, dir, "add", "-A")
+	git(t, dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-q", "-m", msg)
 }
 
 func git(t *testing.T, dir string, args ...string) {
@@ -98,7 +104,7 @@ func TestGitChangesBetweenCommits(t *testing.T) {
 	// Commit a change to the shared package on a feature branch.
 	git(t, dir, "switch", "-qc", "feature")
 	write(t, dir, "pkg/util/util.go", "package util\n\nfunc Answer() int { return 43 }\n")
-	git(t, dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qam", "change util")
+	commitAll(t, dir, "change util")
 
 	// Dirty the working tree: these must NOT influence the result.
 	write(t, dir, "cmd/b/main.go", "package main\n\nfunc main() { println(\"dirty\") }\n")
@@ -185,8 +191,7 @@ func TestGoWorkChange(t *testing.T) {
 	}
 	write(t, dir, "extra/go.mod", "module example.com/extra\n\ngo 1.21\n")
 	write(t, dir, "extra/extra.go", "package extra\n")
-	git(t, dir, "add", ".")
-	git(t, dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "add workspace")
+	commitAll(t, dir, "add workspace")
 
 	// Adding a use directive only affects mains that import that module —
 	// here none, so nothing is affected.
@@ -214,8 +219,7 @@ func TestGoWorkAddRemove(t *testing.T) {
 	}
 	write(t, dir, "extra/go.mod", "module example.com/extra\n\ngo 1.21\n\nrequire example.com/dep v0.0.2\n")
 	write(t, dir, "extra/extra.go", "package extra\n")
-	git(t, dir, "add", ".")
-	git(t, dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "add extra module")
+	commitAll(t, dir, "add extra module")
 
 	// Adding a go.work that only uses the module itself changes nothing.
 	write(t, dir, "go.work", "go 1.21\n\nuse .\n")
@@ -234,8 +238,7 @@ func TestGoWorkAddRemove(t *testing.T) {
 	}
 
 	// Removing a committed go.work is symmetric.
-	git(t, dir, "add", "go.work")
-	git(t, dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "add go.work")
+	commitAll(t, dir, "add go.work")
 	if err := os.Remove(filepath.Join(dir, "go.work")); err != nil {
 		t.Fatal(err)
 	}
@@ -250,8 +253,7 @@ func TestGoSumChanges(t *testing.T) {
 
 	// Commit a go.sum so there is an old version to diff against.
 	write(t, dir, "go.sum", "example.com/dep v0.0.0 h1:AAA=\nexample.com/dep v0.0.0/go.mod h1:AAB=\n")
-	git(t, dir, "add", "go.sum")
-	git(t, dir, "-c", "user.name=test", "-c", "user.email=test@example.com", "commit", "-qm", "add go.sum")
+	commitAll(t, dir, "add go.sum")
 
 	// Added or removed entries (e.g. pruned by go mod tidy) cannot change
 	// the build and are ignored.

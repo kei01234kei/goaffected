@@ -20,18 +20,35 @@ type changes struct {
 	all     bool     // every package must be treated as changed
 }
 
+// repo is the git repository being analyzed and the two states under
+// comparison: the merge-base commit and the target, which is either the
+// head commit or, when head is empty, the working tree.
+type repo struct {
+	root      string // module root (-C); git commands run here
+	top       string // repository top-level directory
+	mergeBase string // commit the target is compared against
+	head      string // target commit; empty means the working tree
+}
+
 // gitChanges collects the changes since the merge-base of base and head.
 // With an empty head it compares against the working tree, including
 // uncommitted and untracked files; with a non-empty head it compares the
 // two commits only, so the result is deterministic. When ignoreComments is
 // true, .go files whose changes are limited to comments or formatting are
-// excluded. go.mod and go.sum changes are translated into the module paths
-// whose requirements actually changed.
+// excluded. Changes to go.mod, go.sum, and go.work are translated into the
+// module paths they actually affect.
 func gitChanges(root, base, head string, ignoreComments bool) (changes, error) {
-	var ch changes
+	r, err := openRepo(root, base, head)
+	if err != nil {
+		return changes{}, err
+	}
+	return r.changes(ignoreComments)
+}
+
+func openRepo(root, base, head string) (repo, error) {
 	top, err := gitLines(root, "rev-parse", "--show-toplevel")
 	if err != nil || len(top) == 0 {
-		return ch, fmt.Errorf("%s is not inside a git repository: %v", root, err)
+		return repo{}, fmt.Errorf("%s is not inside a git repository: %v", root, err)
 	}
 	target := head
 	if target == "" {
@@ -39,109 +56,114 @@ func gitChanges(root, base, head string, ignoreComments bool) (changes, error) {
 	}
 	mergeBase, err := gitLines(root, "merge-base", base, target)
 	if err != nil || len(mergeBase) == 0 {
-		return ch, fmt.Errorf("cannot resolve merge-base of %s and %s: %v", base, target, err)
+		return repo{}, fmt.Errorf("cannot resolve merge-base of %s and %s: %v", base, target, err)
 	}
+	return repo{root: root, top: top[0], mergeBase: mergeBase[0], head: head}, nil
+}
 
-	var names []string
-	if head == "" {
-		names, err = gitLines(root, "diff", "--name-only", mergeBase[0])
-		if err != nil {
-			return ch, err
-		}
-		untracked, err := gitLines(root, "ls-files", "--others", "--exclude-standard", "--full-name")
-		if err != nil {
-			return ch, err
-		}
-		names = append(names, untracked...)
-	} else {
-		names, err = gitLines(root, "diff", "--name-only", mergeBase[0], head)
-		if err != nil {
-			return ch, err
-		}
+func (r repo) changes(ignoreComments bool) (changes, error) {
+	var ch changes
+	names, err := r.changedNames()
+	if err != nil {
+		return ch, err
 	}
-
 	for _, f := range names {
-		abs := filepath.Join(top[0], filepath.FromSlash(f))
 		switch filepath.Base(f) {
+		case "go.mod":
+			if err := r.goModChanges(f, &ch); err != nil {
+				return ch, err
+			}
+		case "go.sum":
+			r.goSumChanges(f, true, &ch)
 		case "go.work":
-			mods, all, err := goWorkChanges(root, top[0], mergeBase[0], head, f, abs)
+			mods, all, err := r.goWorkChanges(f)
 			if err != nil {
 				return ch, err
 			}
 			ch.all = ch.all || all
 			ch.modules = append(ch.modules, mods...)
-			continue
 		case "go.work.sum":
-			// Same reasoning as go.sum: added or removed hashes
-			// cannot change the build, a changed hash for an
-			// existing version can.
-			old, _ := gitOutput(root, "show", mergeBase[0]+":"+f)
-			cur, err := targetContent(root, head, f, abs)
-			if err != nil {
-				ch.all = true
+			r.goSumChanges(f, false, &ch)
+		default:
+			if ignoreComments && strings.HasSuffix(f, ".go") && r.commentOnly(f) {
 				continue
 			}
-			ch.modules = append(ch.modules, diffGoSum(old, cur)...)
-			continue
-		case "go.mod":
-			// Old content is empty for files new since the merge-base.
-			old, _ := gitOutput(root, "show", mergeBase[0]+":"+f)
-			cur, err := targetContent(root, head, f, abs)
-			if err != nil {
-				ch.all = true // deleted; cannot tell what it affected
-				continue
-			}
-			mods, all, err := diffGoMod(old, cur)
-			if err != nil {
-				return ch, fmt.Errorf("%s: %w", f, err)
-			}
-			ch.all = ch.all || all
-			ch.modules = append(ch.modules, mods...)
-			continue
-		case "go.sum":
-			// With module graph pruning (go >= 1.17), a change to a
-			// selected module version also appears in go.mod, so
-			// added or removed go.sum entries (e.g. hashes pruned by
-			// go mod tidy) cannot change the build. A changed hash
-			// for an existing module@version, however, means that
-			// version's content itself changed.
-			modRel := strings.TrimSuffix(f, "go.sum") + "go.mod"
-			gomod, err := targetContent(root, head, modRel, filepath.Join(top[0], filepath.FromSlash(modRel)))
-			if err != nil || !modGraphPruned(gomod) {
-				ch.all = true // pre-1.17 module or missing go.mod
-				continue
-			}
-			old, _ := gitOutput(root, "show", mergeBase[0]+":"+f)
-			cur, err := targetContent(root, head, f, abs)
-			if err != nil {
-				ch.all = true // deleted; cannot tell what it affected
-				continue
-			}
-			ch.modules = append(ch.modules, diffGoSum(old, cur)...)
-			continue
+			ch.files = append(ch.files, r.abs(f))
 		}
-		if ignoreComments && strings.HasSuffix(f, ".go") && commentOnlyChange(root, mergeBase[0], head, f, abs) {
-			continue
-		}
-		ch.files = append(ch.files, abs)
 	}
 	return ch, nil
 }
 
+// changedNames returns the repo-relative paths of files that differ
+// between the merge-base and the target state.
+func (r repo) changedNames() ([]string, error) {
+	if r.head != "" {
+		return gitLines(r.root, "diff", "--name-only", r.mergeBase, r.head)
+	}
+	names, err := gitLines(r.root, "diff", "--name-only", r.mergeBase)
+	if err != nil {
+		return nil, err
+	}
+	untracked, err := gitLines(r.root, "ls-files", "--others", "--exclude-standard", "--full-name")
+	if err != nil {
+		return nil, err
+	}
+	return append(names, untracked...), nil
+}
+
+// goModChanges folds a change to the go.mod at repo-relative path f into ch.
+func (r repo) goModChanges(f string, ch *changes) error {
+	old, _ := r.oldContent(f) // empty for files new since the merge-base
+	cur, err := r.newContent(f)
+	if err != nil {
+		ch.all = true // deleted; cannot tell what it affected
+		return nil
+	}
+	mods, all, err := diffGoMod(old, cur)
+	if err != nil {
+		return fmt.Errorf("%s: %w", f, err)
+	}
+	ch.all = ch.all || all
+	ch.modules = append(ch.modules, mods...)
+	return nil
+}
+
+// goSumChanges folds a change to the go.sum or go.work.sum at
+// repo-relative path f into ch. Added or removed hashes cannot change the
+// build, a changed hash for an existing version can. For go.sum this
+// reasoning requires the sibling go.mod to have module graph pruning
+// (go >= 1.17), which checkPruned selects.
+func (r repo) goSumChanges(f string, checkPruned bool, ch *changes) {
+	if checkPruned {
+		gomod, err := r.newContent(strings.TrimSuffix(f, "go.sum") + "go.mod")
+		if err != nil || !modGraphPruned(gomod) {
+			ch.all = true // pre-1.17 module or missing go.mod
+			return
+		}
+	}
+	old, _ := r.oldContent(f)
+	cur, err := r.newContent(f)
+	if err != nil {
+		ch.all = true // deleted; cannot tell what it affected
+		return
+	}
+	ch.modules = append(ch.modules, diffGoSum(old, cur)...)
+}
+
 // goWorkChanges translates a change to the go.work file at repo-relative
 // path f into the module paths it affects.
-func goWorkChanges(root, top, mergeBase, head, f, abs string) ([]string, bool, error) {
-	old, errOld := gitOutput(root, "show", mergeBase+":"+f)
-	cur, errCur := targetContent(root, head, f, abs)
+func (r repo) goWorkChanges(f string) ([]string, bool, error) {
+	old, errOld := r.oldContent(f)
+	cur, errCur := r.newContent(f)
 	switch {
 	case errOld != nil && errCur != nil:
 		return nil, true, nil
 	case errOld != nil:
 		// go.work added: every member joins the workspace at once.
-		return workMembersImpact(root, top, mergeBase, head, f, cur, false)
+		return r.workMembersImpact(f, cur, false)
 	case errCur != nil:
 		// go.work removed: every member leaves the workspace.
-		return workMembersImpact(root, top, mergeBase, head, f, old, true)
+		return r.workMembersImpact(f, old, true)
 	}
 
 	d, err := diffGoWork(old, cur)
@@ -153,14 +175,14 @@ func goWorkChanges(root, top, mergeBase, head, f, abs string) ([]string, bool, e
 	}
 	mods := d.modules
 	for _, u := range d.removedUses {
-		m, all, err := useImpact(root, top, mergeBase, head, f, u, true)
+		m, all, err := r.useImpact(f, u, true)
 		if err != nil || all {
 			return nil, true, err
 		}
 		mods = append(mods, m...)
 	}
 	for _, u := range d.addedUses {
-		m, all, err := useImpact(root, top, mergeBase, head, f, u, false)
+		m, all, err := r.useImpact(f, u, false)
 		if err != nil || all {
 			return nil, true, err
 		}
@@ -173,7 +195,7 @@ func goWorkChanges(root, top, mergeBase, head, f, abs string) ([]string, bool, e
 // join or leave the workspace at once. atOld selects whether member go.mod
 // files are read at the merge-base (removed) or at the target state
 // (added).
-func workMembersImpact(root, top, mergeBase, head, f string, work []byte, atOld bool) ([]string, bool, error) {
+func (r repo) workMembersImpact(f string, work []byte, atOld bool) ([]string, bool, error) {
 	w, err := modfile.ParseWork("go.work", work, nil)
 	if err != nil {
 		return nil, false, fmt.Errorf("%s: %w", f, err)
@@ -186,7 +208,7 @@ func workMembersImpact(root, top, mergeBase, head, f string, work []byte, atOld 
 		mods = append(mods, strings.SplitN(k, "@", 2)[0])
 	}
 	for u := range useSet(w) {
-		m, all, err := useImpact(root, top, mergeBase, head, f, u, atOld)
+		m, all, err := r.useImpact(f, u, atOld)
 		if err != nil || all {
 			return nil, true, err
 		}
@@ -199,29 +221,17 @@ func workMembersImpact(root, top, mergeBase, head, f string, work []byte, atOld 
 // to the go.work at repo-relative path f) joining or leaving the
 // workspace. The module being analyzed (-C) is skipped: it is built from
 // its local sources either way and its own requirements already apply.
-func useImpact(root, top, mergeBase, head, f, u string, atOld bool) ([]string, bool, error) {
-	read := func(rel string) ([]byte, error) {
-		if atOld {
-			return gitOutput(root, "show", mergeBase+":"+rel)
-		}
-		return targetContent(root, head, rel, filepath.Join(top, filepath.FromSlash(rel)))
-	}
-
+func (r repo) useImpact(f, u string, atOld bool) ([]string, bool, error) {
 	memberRel := path.Join(path.Dir(f), u, "go.mod")
-	member, err := read(memberRel)
+	member, err := r.content(memberRel, atOld)
 	if err != nil {
 		return nil, true, nil // e.g. a use directory outside the repository; be safe
 	}
-
-	absRoot, err := filepath.Abs(root)
+	rootRel, err := r.moduleRootRel()
 	if err != nil {
-		return nil, false, err
-	}
-	relRoot, err := filepath.Rel(top, canonicalize(absRoot))
-	if err != nil || strings.HasPrefix(relRoot, "..") {
 		return nil, true, nil
 	}
-	base, err := read(path.Join(filepath.ToSlash(relRoot), "go.mod"))
+	base, err := r.content(path.Join(rootRel, "go.mod"), atOld)
 	if err != nil {
 		return nil, true, nil
 	}
@@ -244,6 +254,63 @@ func useImpact(root, top, mergeBase, head, f, u string, atOld bool) ([]string, b
 	return mods, all, nil
 }
 
+// commentOnly reports whether the .go file at repo-relative path rel
+// differs between the merge-base and the target state only in comments or
+// formatting, in which case the change cannot affect any build. Deleted
+// and newly added files count as real changes.
+func (r repo) commentOnly(rel string) bool {
+	cur, err := r.newContent(rel)
+	if err != nil {
+		return false
+	}
+	old, err := r.oldContent(rel)
+	if err != nil {
+		return false
+	}
+	return sameGoTokens(old, cur)
+}
+
+// oldContent returns the file's content at the merge-base commit.
+func (r repo) oldContent(rel string) ([]byte, error) {
+	return gitOutput(r.root, "show", r.mergeBase+":"+rel)
+}
+
+// newContent returns the file's content at the target state: the head
+// commit, or the working tree when head is empty.
+func (r repo) newContent(rel string) ([]byte, error) {
+	if r.head == "" {
+		return os.ReadFile(r.abs(rel))
+	}
+	return gitOutput(r.root, "show", r.head+":"+rel)
+}
+
+// content returns the file's content at the merge-base or target state.
+func (r repo) content(rel string, atOld bool) ([]byte, error) {
+	if atOld {
+		return r.oldContent(rel)
+	}
+	return r.newContent(rel)
+}
+
+// abs returns the working-tree path of a repo-relative file.
+func (r repo) abs(rel string) string {
+	return filepath.Join(r.top, filepath.FromSlash(rel))
+}
+
+// moduleRootRel returns the repo-relative, slash-separated path of the
+// module root (-C).
+func (r repo) moduleRootRel() (string, error) {
+	abs, err := filepath.Abs(r.root)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(r.top, canonicalize(abs))
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("%s is outside the repository %s", r.root, r.top)
+	}
+	return filepath.ToSlash(rel), nil
+}
+
 // defaultBase returns the repository's default branch, i.e. the branch
 // that origin/HEAD points at.
 func defaultBase(root string) (string, error) {
@@ -252,34 +319,6 @@ func defaultBase(root string) (string, error) {
 		return "", fmt.Errorf("cannot detect the default branch because origin/HEAD is not set; specify -base explicitly (or run: git remote set-head origin --auto)")
 	}
 	return ref[0], nil
-}
-
-// commentOnlyChange reports whether the .go file (rel is its
-// repository-relative path) differs between commit and either the head
-// commit or, with an empty head, the working-tree file at abs, only in
-// comments or formatting, in which case the change cannot affect any
-// build. Deleted files and files that did not exist at commit count as
-// real changes.
-func commentOnlyChange(root, commit, head, rel, abs string) bool {
-	cur, err := targetContent(root, head, rel, abs)
-	if err != nil {
-		return false
-	}
-	old, err := gitOutput(root, "show", commit+":"+rel)
-	if err != nil {
-		return false
-	}
-	return sameGoTokens(old, cur)
-}
-
-// targetContent returns the content of the file being analyzed: the
-// working-tree file at abs, or its version at the head commit when head is
-// non-empty.
-func targetContent(root, head, rel, abs string) ([]byte, error) {
-	if head == "" {
-		return os.ReadFile(abs)
-	}
-	return gitOutput(root, "show", head+":"+rel)
 }
 
 // gitOutput runs git with the given arguments in dir and returns its stdout.

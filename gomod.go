@@ -107,7 +107,7 @@ func memberImpact(memberGoMod, baseGoMod []byte) (mods []string, all bool, err e
 	if err != nil {
 		return nil, false, fmt.Errorf("parsing base go.mod: %w", err)
 	}
-	if mf.Go == nil || semver.Compare("v"+mf.Go.Version, "v1.17") < 0 {
+	if !prunedGoVersion(goDirective(mf)) {
 		return nil, true, nil
 	}
 	mods = []string{modulePath(mf)}
@@ -174,10 +174,13 @@ func sumEntries(b []byte) map[string]string {
 // by go mod tidy) cannot change the build and can be ignored.
 func modGraphPruned(gomod []byte) bool {
 	f, err := modfile.Parse("go.mod", gomod, nil)
-	if err != nil || f.Go == nil {
-		return false
-	}
-	return semver.Compare("v"+f.Go.Version, "v1.17") >= 0
+	return err == nil && prunedGoVersion(goDirective(f))
+}
+
+// prunedGoVersion reports whether a go directive value enables module
+// graph pruning (go 1.17 or later).
+func prunedGoVersion(v string) bool {
+	return v != "" && semver.Compare("v"+v, "v1.17") >= 0
 }
 
 func modulePath(f *modfile.File) string {
