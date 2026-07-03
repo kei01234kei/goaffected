@@ -48,7 +48,6 @@ Flags:
 			log.Fatal(err)
 		}
 		*base = ref
-		log.Printf("comparing against %s", *base)
 	}
 	ch, err := gitChanges(*root, *base, *head, !*includeCommentAndFormat)
 	if err != nil {
