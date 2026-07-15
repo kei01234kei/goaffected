@@ -62,6 +62,24 @@ replace example.com/b => ../b
 			wantAll: true,
 		},
 		{
+			// godebug settings are compiled into every binary.
+			name:    "godebug added",
+			old:     base,
+			nu:      base + "\ngodebug panicnil=1\n",
+			wantAll: true,
+		},
+		{
+			name:    "godebug value changed",
+			old:     base + "\ngodebug panicnil=1\n",
+			nu:      base + "\ngodebug panicnil=0\n",
+			wantAll: true,
+		},
+		{
+			name: "godebug reordered only",
+			old:  base + "\ngodebug (\n\tpanicnil=1\n\thttp2client=0\n)\n",
+			nu:   base + "\ngodebug (\n\thttp2client=0\n\tpanicnil=1\n)\n",
+		},
+		{
 			name:    "unparsable",
 			old:     base,
 			nu:      "module\n",
@@ -162,6 +180,13 @@ func TestDiffGoWork(t *testing.T) {
 			name: "go directive changed",
 			old:  base,
 			nu:   "go 1.22\n\nuse (\n\t.\n\t./tools\n)\n\nreplace example.com/b v1.0.0 => ../b\n",
+			want: goWorkDiff{all: true},
+		},
+		{
+			// Workspace godebug settings apply to every binary built in it.
+			name: "godebug added",
+			old:  base,
+			nu:   base + "\ngodebug panicnil=1\n",
 			want: goWorkDiff{all: true},
 		},
 		{

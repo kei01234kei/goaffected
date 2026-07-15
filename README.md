@@ -70,8 +70,9 @@ interaction, the import graph construction, and the reachability analysis.
   affected. Reordered requires and added or removed `// indirect` comments
   (formatting by `go mod tidy`) produce no diff. Adding or removing go.work
   itself is also analyzed per member (adding a go.work that only contains
-  `use .` affects nothing). Changes to the `go` / `toolchain` directives or
-  the module path affect every main package. Unparsable files are an error.
+  `use .` affects nothing). Changes to the `go` / `toolchain` / `godebug`
+  directives or the module path affect every main package. Unparsable files
+  are an error.
 - A changed `go.sum` → added and removed entries (e.g. hashes pruned by
   `go mod tidy`) are ignored: from go 1.17 on, the version of every module
   used in the build is recorded in go.mod, so a version-selection change

@@ -137,7 +137,7 @@ to form the set of "changed packages".
 | `_test.go` | Ignored; does not affect binaries |
 | `go.mod` | Old and new contents are diffed; **packages of the modules whose requirements changed** count as changed (see below) |
 | `go.sum` | Added/removed entries are ignored; a changed hash for the same version marks that module (see below) |
-| `go.work` | Affected modules are derived from the use / replace diff (like go.mod). Adding/removing the file is also analyzed per member. `go`/`toolchain` changes affect all mains |
+| `go.work` | Affected modules are derived from the use / replace diff (like go.mod). Adding/removing the file is also analyzed per member. `go`/`toolchain`/`godebug` changes affect all mains |
 | `go.work.sum` | Same as go.sum (added/removed entries ignored, a changed hash for the same version marks that module) |
 | Files under `testdata` or directories starting with `.`/`_` | Ignored; the go tool ignores them |
 | Anything else (README, etc.) | Ignored |
@@ -210,6 +210,8 @@ The following changes do affect the whole build, so every main is treated
 as affected:
 
 - a changed `go` / `toolchain` directive (compiler behavior changes)
+- a changed `godebug` directive in go.mod or go.work (the runtime defaults
+  compiled into every binary change)
 - a changed module path
 - a member go.mod below go 1.17 (its requirements are not fully recorded,
   so the computation above is impossible), or a member outside the

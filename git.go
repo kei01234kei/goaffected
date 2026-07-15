@@ -224,8 +224,10 @@ func (r repo) workMembersImpact(f string, work []byte, atOld bool) ([]string, bo
 	if err != nil {
 		return nil, false, fmt.Errorf("%s: %w", f, err)
 	}
-	if w.Toolchain != nil {
-		return nil, true, nil // an explicit toolchain switch appears or disappears
+	if w.Toolchain != nil || len(w.Godebug) > 0 {
+		// An explicit toolchain switch or workspace godebug settings
+		// appear or disappear with the file.
+		return nil, true, nil
 	}
 	var mods []string
 	for k := range replaceEntries(w.Replace) {
