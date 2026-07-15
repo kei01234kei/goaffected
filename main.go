@@ -23,7 +23,7 @@ func main() {
 	head := flag.String("head", "", "commit whose changes to analyze; when set, only committed changes\nbetween the merge-base of -base and this commit are considered, so\nthe result is deterministic — the working tree and untracked files\nare ignored")
 	includeCommentAndFormat := flag.Bool("include-comment-and-format", false, "also treat .go files whose changes are limited to comments or\nformatting as changed (by default such changes are ignored)")
 	flag.Usage = func() {
-		fmt.Fprint(flag.CommandLine.Output(), `Usage: goaffected [-C dir] [-base ref]
+		fmt.Fprint(flag.CommandLine.Output(), `Usage: goaffected [-C dir] [-base ref] [-head commit] [-include-comment-and-format]
 
 Prints the directories (relative to the module root) of main packages whose
 build is affected by the files changed in git: the diff between the working
