@@ -289,6 +289,14 @@ func TestGoWorkAddRemove(t *testing.T) {
 		t.Errorf("affected after adding go.work with use . = %v, want none", got)
 	}
 
+	// But a go.work that carries godebug settings changes the runtime
+	// defaults compiled into every binary.
+	write(t, dir, "go.work", "go 1.23\n\ngodebug panicnil=1\n\nuse .\n")
+	got = affectedIn(t, dir, "HEAD", "", true)
+	if want := []string{"cmd/a", "cmd/b", "cmd/c"}; !slices.Equal(got, want) {
+		t.Errorf("affected after adding go.work with godebug = %v, want %v", got, want)
+	}
+
 	// Adding extra as a member raises the selected version of
 	// example.com/dep, so the main importing it is affected — but only
 	// that one.

@@ -14,8 +14,8 @@ import (
 
 // diffGoMod compares two go.mod contents and returns the paths of modules
 // whose requirement or replacement changed. all is true when the change
-// affects every package: the module path, go directive, or toolchain
-// changed.
+// affects every package: the module path, go directive, toolchain, or
+// godebug settings changed.
 func diffGoMod(old, new []byte) (mods []string, all bool, err error) {
 	of, err := modfile.Parse("go.mod", old, nil)
 	if err != nil {
@@ -26,7 +26,8 @@ func diffGoMod(old, new []byte) (mods []string, all bool, err error) {
 		return nil, false, fmt.Errorf("parsing go.mod: %w", err)
 	}
 	if modulePath(of) != modulePath(nf) || goDirective(of) != goDirective(nf) ||
-		toolchainDirective(of) != toolchainDirective(nf) {
+		toolchainDirective(of) != toolchainDirective(nf) ||
+		!maps.Equal(godebugMap(of.Godebug), godebugMap(nf.Godebug)) {
 		return nil, true, nil
 	}
 
@@ -43,7 +44,7 @@ func diffGoMod(old, new []byte) (mods []string, all bool, err error) {
 
 // goWorkDiff describes the difference between two go.work contents.
 type goWorkDiff struct {
-	all         bool     // go or toolchain directive changed
+	all         bool     // go, toolchain, or godebug directive changed
 	modules     []string // module paths whose replacement changed
 	addedUses   []string // use directories present only in the new file
 	removedUses []string // use directories present only in the old file
@@ -61,7 +62,8 @@ func diffGoWork(old, new []byte) (goWorkDiff, error) {
 	if err != nil {
 		return d, fmt.Errorf("parsing go.work: %w", err)
 	}
-	if workGo(ow) != workGo(nw) || workToolchain(ow) != workToolchain(nw) {
+	if workGo(ow) != workGo(nw) || workToolchain(ow) != workToolchain(nw) ||
+		!maps.Equal(godebugMap(ow.Godebug), godebugMap(nw.Godebug)) {
 		d.all = true
 		return d, nil
 	}
@@ -208,6 +210,17 @@ func requireMap(f *modfile.File) map[string]string {
 	m := map[string]string{}
 	for _, r := range f.Require {
 		m[r.Mod.Path] = r.Mod.Version
+	}
+	return m
+}
+
+// godebugMap returns godebug settings as a key → value map. Only the main
+// module's (or the workspace's) godebug directives apply to a build, and
+// they change the runtime defaults compiled into every binary.
+func godebugMap(gs []*modfile.Godebug) map[string]string {
+	m := map[string]string{}
+	for _, g := range gs {
+		m[g.Key] = g.Value
 	}
 	return m
 }
