@@ -91,7 +91,10 @@ func affectedMainDirs(root string, ch changes) ([]string, error) {
 				}
 				continue
 			}
-			if !goToolIgnores(abs, absRoot) {
+			// Files outside the module root (e.g. sibling modules in a
+			// monorepo) are silently skipped; warn only inside the module.
+			rel, err := filepath.Rel(absRoot, abs)
+			if err == nil && !strings.HasPrefix(rel, "..") && !goToolIgnores(abs, absRoot) {
 				log.Printf("warning: %s does not belong to any loaded package; ignoring", f)
 			}
 		}

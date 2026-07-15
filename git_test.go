@@ -153,6 +153,67 @@ func TestCommentOnlyChangeIgnored(t *testing.T) {
 	}
 }
 
+func TestNonASCIIFilenames(t *testing.T) {
+	dir := setupRepo(t)
+
+	// git quotes non-ASCII paths in line-based output (core.quotepath);
+	// the NUL-separated listing must return them verbatim, for both a
+	// tracked modification and an untracked file.
+	write(t, dir, "pkg/util/日本語.go", "package util\n\nfunc Nihongo() int { return 1 }\n")
+	commitAll(t, dir, "add non-ascii file")
+	write(t, dir, "pkg/util/日本語.go", "package util\n\nfunc Nihongo() int { return 2 }\n")
+	write(t, dir, "cmd/b/追加.go", "package main\n\nvar extra = true\n")
+
+	got := affectedIn(t, dir, "HEAD", "", true)
+	if want := []string{"cmd/a", "cmd/b"}; !slices.Equal(got, want) {
+		t.Errorf("affected = %v, want %v", got, want)
+	}
+}
+
+func TestRenameAcrossPackages(t *testing.T) {
+	dir := setupRepo(t)
+
+	// Commit a second file in pkg/util, then move it verbatim to a new
+	// directory. pkg/util loses the file, so cmd/a must be affected even
+	// though git detects the move as a rename and no path in pkg/util
+	// appears as modified.
+	write(t, dir, "pkg/util/extra.go", "package util\n\nfunc Extra() int { return 7 }\n")
+	commitAll(t, dir, "add extra")
+	if err := os.MkdirAll(filepath.Join(dir, "pkg", "other"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "mv", "pkg/util/extra.go", "pkg/other/extra.go")
+
+	got := affectedIn(t, dir, "HEAD", "", true)
+	if want := []string{"cmd/a"}; !slices.Equal(got, want) {
+		t.Errorf("affected after rename = %v, want %v", got, want)
+	}
+
+	// The committed rename between two commits behaves the same.
+	commitAll(t, dir, "move extra")
+	got = affectedIn(t, dir, "HEAD~1", "HEAD", true)
+	if want := []string{"cmd/a"}; !slices.Equal(got, want) {
+		t.Errorf("affected between commits = %v, want %v", got, want)
+	}
+}
+
+func TestModuleFilesInIgnoredDirsAreIgnored(t *testing.T) {
+	dir := setupRepo(t)
+
+	// A go.mod fixture under testdata is not part of the build, so adding
+	// one must not affect anything (a new go.mod would otherwise be treated
+	// as a module-path change affecting every main).
+	if err := os.MkdirAll(filepath.Join(dir, "testdata", "fixture"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "testdata/fixture/go.mod", "module example.com/fixture\n\ngo 1.21\n")
+
+	got := affectedIn(t, dir, "HEAD", "", true)
+	if len(got) != 0 {
+		t.Errorf("affected = %v, want none", got)
+	}
+}
+
 func TestGoModChange(t *testing.T) {
 	dir := setupRepo(t)
 

@@ -73,6 +73,11 @@ flowchart TD
 - With `-head`, only the diff between the two commits is considered, so the
   same two commits always produce the same result (deterministic mode for
   CI).
+- Renamed files are listed as a deletion plus an addition (`--no-renames`),
+  so the package that lost the file counts as changed too. Paths are read
+  NUL-separated (`-z`), so non-ASCII filenames come back unquoted.
+- Files the go tool ignores (under `testdata` or directories starting with
+  `.`/`_`) are dropped here, including go.mod / go.sum fixtures.
 
 ## Detecting comment/formatting-only changes
 

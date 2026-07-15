@@ -47,16 +47,22 @@ func gitChanges(root, base, head string, ignoreComments bool) (changes, error) {
 
 func openRepo(root, base, head string) (repo, error) {
 	top, err := gitLines(root, "rev-parse", "--show-toplevel")
-	if err != nil || len(top) == 0 {
+	if err != nil {
 		return repo{}, fmt.Errorf("%s is not inside a git repository: %v", root, err)
+	}
+	if len(top) == 0 {
+		return repo{}, fmt.Errorf("%s is not inside a git repository", root)
 	}
 	target := head
 	if target == "" {
 		target = "HEAD"
 	}
 	mergeBase, err := gitLines(root, "merge-base", base, target)
-	if err != nil || len(mergeBase) == 0 {
+	if err != nil {
 		return repo{}, fmt.Errorf("cannot resolve merge-base of %s and %s: %v", base, target, err)
+	}
+	if len(mergeBase) == 0 {
+		return repo{}, fmt.Errorf("cannot resolve merge-base of %s and %s", base, target)
 	}
 	return repo{root: root, top: top[0], mergeBase: mergeBase[0], head: head}, nil
 }
@@ -68,6 +74,9 @@ func (r repo) changes(ignoreComments bool) (changes, error) {
 		return ch, err
 	}
 	for _, f := range names {
+		if r.goToolIgnored(f) {
+			continue // e.g. a go.mod fixture under testdata
+		}
 		switch filepath.Base(f) {
 		case "go.mod":
 			if err := r.goModChanges(f, &ch); err != nil {
@@ -95,20 +104,35 @@ func (r repo) changes(ignoreComments bool) (changes, error) {
 }
 
 // changedNames returns the repo-relative paths of files that differ
-// between the merge-base and the target state.
+// between the merge-base and the target state. --no-renames lists a
+// renamed file as a deletion plus an addition, so the package that lost
+// the file is analyzed too.
 func (r repo) changedNames() ([]string, error) {
 	if r.head != "" {
-		return gitLines(r.root, "diff", "--name-only", r.mergeBase, r.head)
+		return gitPaths(r.root, "diff", "--name-only", "--no-renames", "-z", r.mergeBase, r.head)
 	}
-	names, err := gitLines(r.root, "diff", "--name-only", r.mergeBase)
+	names, err := gitPaths(r.root, "diff", "--name-only", "--no-renames", "-z", r.mergeBase)
 	if err != nil {
 		return nil, err
 	}
-	untracked, err := gitLines(r.root, "ls-files", "--others", "--exclude-standard", "--full-name")
+	untracked, err := gitPaths(r.root, "ls-files", "--others", "--exclude-standard", "--full-name", "-z")
 	if err != nil {
 		return nil, err
 	}
 	return append(names, untracked...), nil
+}
+
+// goToolIgnored reports whether the go tool would never include the
+// repo-relative file f in the build of the module being analyzed, because
+// a directory on its path below the module root is named "testdata" or
+// starts with "." or "_". Module files (go.mod, go.sum, ...) under such
+// directories are fixtures, not part of the build.
+func (r repo) goToolIgnored(f string) bool {
+	abs, err := filepath.Abs(r.root)
+	if err != nil {
+		return false
+	}
+	return goToolIgnores(r.abs(f), canonicalize(abs))
 }
 
 // goModChanges folds a change to the go.mod at repo-relative path f into ch.
@@ -333,6 +357,24 @@ func gitOutput(dir string, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
 	return out, nil
+}
+
+// gitPaths runs git with the given arguments (which must include -z) in
+// dir and returns its output as a slice of NUL-separated paths. Unlike
+// line-based output, -z output is never quoted, so paths containing
+// non-ASCII or special characters come back verbatim.
+func gitPaths(dir string, args ...string) ([]string, error) {
+	out, err := gitOutput(dir, args...)
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, p := range strings.Split(string(out), "\x00") {
+		if p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return paths, nil
 }
 
 // gitLines runs git with the given arguments in dir and returns its output
