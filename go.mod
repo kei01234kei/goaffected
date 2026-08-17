@@ -3,7 +3,7 @@ module github.com/kei01234kei/goaffected
 go 1.26.4
 
 require (
-	golang.org/x/mod v0.39.0
+	golang.org/x/mod v0.40.0
 	golang.org/x/tools v0.49.0
 )
 
