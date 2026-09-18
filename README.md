@@ -6,6 +6,14 @@ which binaries need to be rebuilt or redeployed.
 
 ## Installation
 
+Homebrew (macOS):
+
+```sh
+brew install kei01234kei/tap/goaffected
+```
+
+Or with `go install`:
+
 ```sh
 go install github.com/kei01234kei/goaffected@latest
 ```

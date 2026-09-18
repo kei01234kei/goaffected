@@ -21,5 +21,22 @@ archives:
 release:
   mode: keep-existing
 
+homebrew_casks:
+  - repository:
+      owner: kei01234kei
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/kei01234kei/goaffected
+    description: Report which Go main packages are affected by changed files
+    license: Apache-2.0
+    # The binaries are not signed/notarized, so drop the quarantine attribute
+    # Gatekeeper would otherwise use to block them.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/goaffected"]
+          end
+
 changelog:
   disable: true
