@@ -344,3 +344,78 @@ func TestGoSumChanges(t *testing.T) {
 		t.Errorf("affected = %v, want %v", got, want)
 	}
 }
+
+func TestUnrelatedModuleFilesIgnored(t *testing.T) {
+	dir := setupRepo(t)
+
+	// A nested module that the analyzed module neither imports nor shares
+	// a workspace with.
+	if err := os.MkdirAll(filepath.Join(dir, "other"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "other/go.mod", "module example.com/other\n\ngo 1.21\n\nrequire example.com/dep v0.0.0\n")
+	write(t, dir, "other/go.sum", "example.com/dep v0.0.0 h1:AAA=\n")
+	write(t, dir, "other/go.work", "go 1.21\n\nuse .\n")
+	commitAll(t, dir, "add other module")
+
+	for _, tc := range []struct{ file, content string }{
+		{"other/go.mod", "module example.com/other\n\ngo 1.22\n\nrequire example.com/dep v0.0.0\n"},
+		{"other/go.mod", "module example.com/other\n\ngo 1.21\n\nrequire example.com/dep v0.0.1\n"},
+		{"other/go.mod", "module example.com/renamed\n\ngo 1.21\n\nrequire example.com/dep v0.0.0\n"},
+		{"other/go.sum", "example.com/dep v0.0.0 h1:MOVED=\n"},
+		{"other/go.work", "go 1.22\n\nuse .\n"},
+	} {
+		write(t, dir, tc.file, tc.content)
+		if got := affectedIn(t, dir, "HEAD", "", true); len(got) != 0 {
+			t.Errorf("affected after changing %s to %q = %v, want none", tc.file, tc.content, got)
+		}
+		git(t, dir, "checkout", "-q", "--", tc.file)
+	}
+
+	// Deleting the unrelated module affects nothing either.
+	git(t, dir, "rm", "-rq", "other")
+	if got := affectedIn(t, dir, "HEAD", "", true); len(got) != 0 {
+		t.Errorf("affected after deleting other module = %v, want none", got)
+	}
+}
+
+func TestReplacedModuleGoModChange(t *testing.T) {
+	dir := setupRepo(t)
+
+	// dep is a local replacement of the analyzed module. Its go directive
+	// only sets the language version of its own packages, so only the
+	// main importing it is affected — not every main.
+	write(t, dir, "dep/go.mod", "module example.com/dep\n\ngo 1.20\n")
+	got := affectedIn(t, dir, "HEAD", "", true)
+	if want := []string{"cmd/c"}; !slices.Equal(got, want) {
+		t.Errorf("affected = %v, want %v", got, want)
+	}
+}
+
+func TestWorkspaceMemberGoModChange(t *testing.T) {
+	dir := setupRepo(t)
+
+	// extra is a workspace member that nothing imports. Its requirements
+	// still feed version selection for the whole workspace.
+	if err := os.MkdirAll(filepath.Join(dir, "extra"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "extra/go.mod", "module example.com/extra\n\ngo 1.21\n")
+	write(t, dir, "extra/extra.go", "package extra\n")
+	write(t, dir, "go.work", "go 1.21\n\nuse (\n\t.\n\t./extra\n)\n")
+	commitAll(t, dir, "add workspace")
+
+	// Raising a requirement in the member affects the main importing it.
+	write(t, dir, "extra/go.mod", "module example.com/extra\n\ngo 1.21\n\nrequire example.com/dep v0.0.3\n")
+	got := affectedIn(t, dir, "HEAD", "", true)
+	if want := []string{"cmd/c"}; !slices.Equal(got, want) {
+		t.Errorf("affected = %v, want %v", got, want)
+	}
+
+	// A go directive change in the member affects only its own packages,
+	// which no main imports.
+	write(t, dir, "extra/go.mod", "module example.com/extra\n\ngo 1.20\n")
+	if got := affectedIn(t, dir, "HEAD", "", true); len(got) != 0 {
+		t.Errorf("affected after member go directive change = %v, want none", got)
+	}
+}

@@ -48,6 +48,19 @@ func affectedMainDirs(root string, ch changes) ([]string, error) {
 	for _, m := range ch.modules {
 		changedMods[m] = true
 	}
+	all := ch.all
+	if len(ch.others) > 0 {
+		inBuild := buildGoMods(absRoot, pkgs)
+		for _, o := range ch.others {
+			if inBuild != nil && !inBuild[canonicalize(o.goMod)] {
+				continue // e.g. an unrelated sibling module
+			}
+			all = all || o.all
+			for _, m := range o.modules {
+				changedMods[m] = true
+			}
+		}
+	}
 
 	// Index every package in the graph (including dependencies) by
 	// directory and by source/embedded file, and mark packages that
@@ -82,7 +95,7 @@ func affectedMainDirs(root string, ch changes) ([]string, error) {
 			changedIDs[p.ID] = true
 			continue
 		}
-		if strings.HasSuffix(abs, ".go") {
+		if buildSourceExts[filepath.Ext(abs)] {
 			// The file may have been deleted or excluded by build
 			// tags; fall back to the package in its directory.
 			if ps, ok := dirPkgs[filepath.Dir(abs)]; ok {
@@ -125,7 +138,7 @@ func affectedMainDirs(root string, ch changes) ([]string, error) {
 		if p.Name != "main" {
 			continue
 		}
-		if !ch.all && !affected(p) {
+		if !all && !affected(p) {
 			continue
 		}
 		rel, err := filepath.Rel(absRoot, p.Dir)
@@ -136,6 +149,51 @@ func affectedMainDirs(root string, ch changes) ([]string, error) {
 	}
 	sort.Strings(dirs)
 	return dirs, nil
+}
+
+// buildSourceExts lists the extensions of the source files the go tool
+// compiles or links into a package (see go/build): Go, cgo (C, C++,
+// Objective-C, Fortran, headers), assembly, SWIG, and .syso objects.
+var buildSourceExts = map[string]bool{
+	".go": true,
+	".c":  true, ".cc": true, ".cxx": true, ".cpp": true, ".m": true,
+	".h": true, ".hh": true, ".hpp": true, ".hxx": true,
+	".f": true, ".F": true, ".for": true, ".f90": true,
+	".s": true, ".S": true, ".sx": true,
+	".swig": true, ".swigcxx": true, ".syso": true,
+}
+
+// buildGoMods returns the canonical paths of the go.mod files of every
+// module taking part in the build: the main module(s) — all workspace
+// members in workspace mode, whether or not their packages are imported,
+// since their requirements feed version selection — and every module
+// providing a loaded package, including local replacements. It returns
+// nil if the main modules cannot be listed, meaning "assume all".
+func buildGoMods(dir string, pkgs []*packages.Package) map[string]bool {
+	cmd := exec.Command("go", "list", "-m", "-f", "{{.GoMod}}")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	set := map[string]bool{}
+	add := func(p string) {
+		if p != "" {
+			set[canonicalize(p)] = true
+		}
+	}
+	for _, l := range strings.Split(string(out), "\n") {
+		add(strings.TrimSpace(l))
+	}
+	packages.Visit(pkgs, nil, func(p *packages.Package) {
+		if m := p.Module; m != nil {
+			add(m.GoMod)
+			if m.Replace != nil {
+				add(m.Replace.GoMod)
+			}
+		}
+	})
+	return set
 }
 
 // goworkActive reports whether builds in dir run in workspace mode.

@@ -18,6 +18,21 @@ type changes struct {
 	files   []string // paths of changed source files
 	modules []string // module paths whose requirement or checksum changed
 	all     bool     // every package must be treated as changed
+
+	// others holds changes to the go.mod / go.sum of modules other than the
+	// one being analyzed (e.g. sibling modules in a monorepo). Whether they
+	// matter depends on whether that module takes part in the build — as a
+	// workspace member or a local replacement — which is only known once
+	// the packages are loaded, so affectedMainDirs decides.
+	others []otherModChange
+}
+
+// otherModChange is a change to the module files of a module other than
+// the one being analyzed.
+type otherModChange struct {
+	goMod   string   // absolute path of the module's go.mod
+	modules []string // module paths affected if the module is in the build
+	all     bool     // every package is affected if the module is in the build
 }
 
 // repo is the git repository being analyzed and the two states under
@@ -73,18 +88,57 @@ func (r repo) changes(ignoreComments bool) (changes, error) {
 	if err != nil {
 		return ch, err
 	}
+	rootRel, rootErr := r.moduleRootRel()
+	// ownModFile reports whether repo-relative f is the go.mod / go.sum of
+	// the module being analyzed. If the root cannot be located, every
+	// module file is treated as its own, which errs on the safe side.
+	ownModFile := func(f string) bool {
+		return rootErr != nil || path.Dir(f) == rootRel
+	}
+	// governsRoot reports whether a go.work at repo-relative f can apply
+	// to the module being analyzed: it must sit in the module root or one
+	// of its ancestors.
+	governsRoot := func(f string) bool {
+		d := path.Dir(f)
+		return rootErr != nil || d == "." || d == rootRel || strings.HasPrefix(rootRel, d+"/")
+	}
 	for _, f := range names {
 		if r.goToolIgnored(f) {
 			continue // e.g. a go.mod fixture under testdata
 		}
 		switch filepath.Base(f) {
 		case "go.mod":
-			if err := r.goModChanges(f, &ch); err != nil {
+			if ownModFile(f) {
+				if err := r.goModChanges(f, &ch); err != nil {
+					return ch, err
+				}
+				continue
+			}
+			o, ok, err := r.otherGoModChanges(f)
+			if err != nil {
 				return ch, err
 			}
+			if ok {
+				ch.others = append(ch.others, o)
+			}
 		case "go.sum":
-			r.goSumChanges(f, true, &ch)
+			if ownModFile(f) {
+				r.goSumChanges(f, true, &ch)
+				continue
+			}
+			var sub changes
+			r.goSumChanges(f, true, &sub)
+			if sub.all || len(sub.modules) > 0 {
+				ch.others = append(ch.others, otherModChange{
+					goMod:   r.abs(strings.TrimSuffix(f, "go.sum") + "go.mod"),
+					modules: sub.modules,
+					all:     sub.all,
+				})
+			}
 		case "go.work":
+			if !governsRoot(f) {
+				continue // a workspace the analyzed module is not part of
+			}
 			mods, all, err := r.goWorkChanges(f)
 			if err != nil {
 				return ch, err
@@ -92,6 +146,9 @@ func (r repo) changes(ignoreComments bool) (changes, error) {
 			ch.all = ch.all || all
 			ch.modules = append(ch.modules, mods...)
 		case "go.work.sum":
+			if !governsRoot(f) {
+				continue
+			}
 			r.goSumChanges(f, false, &ch)
 		default:
 			if ignoreComments && strings.HasSuffix(f, ".go") && r.commentOnly(f) {
@@ -150,6 +207,38 @@ func (r repo) goModChanges(f string, ch *changes) error {
 	ch.all = ch.all || all
 	ch.modules = append(ch.modules, mods...)
 	return nil
+}
+
+// otherGoModChanges translates a change to the go.mod at repo-relative
+// path f, belonging to a module other than the one being analyzed, into
+// the modules it affects should that module take part in the build. Only
+// the main module's go / toolchain / godebug settings apply to a build, so
+// changes that would affect everything for the main module affect just
+// that module's own packages here (its language version may change). ok
+// is false when the go.mod was deleted: a module that no longer exists
+// cannot be in the build, and dropping it from the workspace or a replace
+// shows up as a change to those files instead.
+func (r repo) otherGoModChanges(f string) (o otherModChange, ok bool, err error) {
+	old, _ := r.oldContent(f) // empty for files new since the merge-base
+	cur, err := r.newContent(f)
+	if err != nil {
+		return o, false, nil
+	}
+	mods, all, err := diffGoMod(old, cur)
+	if err != nil {
+		return o, false, fmt.Errorf("%s: %w", f, err)
+	}
+	if all {
+		for _, b := range [][]byte{old, cur} {
+			if p, err := parseModulePath(b); err == nil {
+				mods = append(mods, p)
+			}
+		}
+	}
+	if len(mods) == 0 {
+		return o, false, nil
+	}
+	return otherModChange{goMod: r.abs(f), modules: mods}, true, nil
 }
 
 // goSumChanges folds a change to the go.sum or go.work.sum at

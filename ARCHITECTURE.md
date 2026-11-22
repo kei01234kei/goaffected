@@ -132,13 +132,15 @@ to form the set of "changed packages".
 | Changed file | Handling |
 |---|---|
 | Regular `.go` | Its package counts as changed |
-| Deleted `.go` (not in the index) | The package in the same directory counts as changed |
+| Deleted `.go` or other build source (`.s` `.c` `.h` `.syso` ...; not in the index) | The package in the same directory counts as changed |
 | File embedded via `//go:embed` | The embedding package counts as changed |
 | `_test.go` | Ignored; does not affect binaries |
 | `go.mod` | Old and new contents are diffed; **packages of the modules whose requirements changed** count as changed (see below) |
 | `go.sum` | Added/removed entries are ignored; a changed hash for the same version marks that module (see below) |
 | `go.work` | Affected modules are derived from the use / replace diff (like go.mod). Adding/removing the file is also analyzed per member. `go`/`toolchain`/`godebug` changes affect all mains |
 | `go.work.sum` | Same as go.sum (added/removed entries ignored, a changed hash for the same version marks that module) |
+| `go.mod` / `go.sum` of another module | Only if that module is in the build (see below) |
+| `go.work` / `go.work.sum` outside the module root and its parents | Ignored; that workspace does not apply to the analyzed module |
 | Files under `testdata` or directories starting with `.`/`_` | Ignored; the go tool ignores them |
 | Anything else (README, etc.) | Ignored |
 
@@ -218,6 +220,26 @@ as affected:
   repository that cannot be resolved
 
 Unparsable go.mod / go.work files are reported as errors.
+
+### go.mod / go.sum of other modules
+
+In a monorepo, a go.mod / go.sum outside the analyzed module root belongs
+to another module. Whether that module takes part in the build is only
+known after loading, so stage 1 records such changes aside and stage 3
+applies them only if the module's go.mod is one of:
+
+- a main module (`go list -m`), i.e. a workspace member — even if none of
+  its packages are imported, its requirements feed version selection;
+- the go.mod of a module providing a loaded package, including a local
+  `replace` target.
+
+For such a module, changed requires/replaces mark those modules as usual,
+while changes that would affect everything for the main module (`go` /
+`toolchain` / `godebug` directives, module path) only mark the module
+itself: those settings of a non-main module affect its own packages at
+most. Changes to unrelated modules and deleted go.mod files are ignored;
+a module leaving the build always shows up as a go.work or replace change
+in the analyzed module's files.
 
 ## 4. Reachability from each main
 
