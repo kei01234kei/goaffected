@@ -84,6 +84,14 @@ interaction, the import graph construction, and the reachability analysis.
 - A changed `_test.go` file → ignored; it does not affect binaries.
 - A changed file embedded via `//go:embed` → treated as a change to the
   embedding package.
-- A deleted `.go` file → treated as a change to the package remaining in
-  the same directory.
+- A deleted `.go` file (or other source file the go tool builds: `.s`,
+  `.c`, `.h`, `.syso`, ...) → treated as a change to the package remaining
+  in the same directory.
+- `go.mod` / `go.sum` of **other modules** in the repository → considered
+  only when that module takes part in the build (a `go.work` member or a
+  local `replace` target), and then only that module's packages and the
+  requirements that changed count; their `go` / `toolchain` / `godebug`
+  directives do not affect every main. Changes to unrelated sibling
+  modules, and to a `go.work` that is not in the module root or one of its
+  parent directories, are ignored.
 - Any other file (README, etc.) → ignored.
